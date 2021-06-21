@@ -21,11 +21,7 @@
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-
-import time
-
-import RPi.GPIO as GPIO
-
+from gpio import GPIO, Pin
 import spidev
 
 
@@ -77,7 +73,7 @@ class MCP23S17(object):
     MCP23S17_CMD_WRITE = 0x40
     MCP23S17_CMD_READ = 0x41
 
-    def __init__(self, bus=0, pin_cs=0, pin_reset=-1, device_id=0x00):
+    def __init__(self, bus=0, pin_cs=0, reset_pin: Pin = None, device_id=0x00):
         """
         Constructor
         Initializes all attributes with 0.
@@ -94,7 +90,7 @@ class MCP23S17(object):
         self._IODIRB = 0
         self._GPPUA = 0
         self._GPPUB = 0
-        self._pin_reset = pin_reset
+        self.reset_pin = reset_pin
         self._bus = bus
         self._pin_cs = pin_cs
         self._spimode = 0b00
@@ -120,6 +116,13 @@ class MCP23S17(object):
         """
         self._spi.close()
         self.isInitialized = False
+
+    def __enter__(self):
+        self.open()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
 
     def setPullupMode(self, pin, mode):
         """Enables or disables the pull-up mode for input pins.
@@ -296,46 +299,12 @@ class MCP23S17(object):
         self._writeRegister(register + 1, data >> 8)
 
     def _setupGPIO(self):
-        GPIO.setwarnings(False)
-        GPIO.setmode(GPIO.BOARD)
-
-        if self._pin_reset != -1:
-            GPIO.setup(self._pin_reset, GPIO.OUT)
-            GPIO.output(self._pin_reset, True)
+        reset_pin = self.reset_pin
+        if reset_pin:
+            reset_pin.set_output()
+            reset_pin.value = True
 
     def _setSpiMode(self, mode):
         if self._spi.mode != mode:
             self._spi.mode = mode
             self._spi.xfer2([0])  # dummy write, to force CLK to correct level
-
-
-if __name__ == '__main__':
-    """The following demo periodically toggles the level of
-    all pins of two MCP23S17 conponents.
-    """
-
-    from RPiMCP23S17 import MCP23S17
-    import time
-
-    # you might also want to use the parameters bus, pin_cs, or pin_reset
-    # to match your hardware setup
-    mcp1 = MCP23S17.MCP23S17(device_id=0x00)
-    mcp2 = MCP23S17.MCP23S17(device_id=0x01)
-    mcp1.open()
-    mcp2.open()
-
-    for x in range(0, 16):
-        mcp1.setDirection(x, mcp1.DIR_OUTPUT)
-        mcp2.setDirection(x, mcp1.DIR_OUTPUT)
-
-    print("Starting blinky on all pins (CTRL+C to quit)")
-    while (True):
-        for x in range(0, 16):
-            mcp1.digitalWrite(x, MCP23S17.MCP23S17.LEVEL_HIGH)
-            mcp2.digitalWrite(x, MCP23S17.MCP23S17.LEVEL_HIGH)
-        time.sleep(1)
-
-        for x in range(0, 16):
-            mcp1.digitalWrite(x, MCP23S17.MCP23S17.LEVEL_LOW)
-            mcp2.digitalWrite(x, MCP23S17.MCP23S17.LEVEL_LOW)
-        time.sleep(1)
