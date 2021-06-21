@@ -20,9 +20,25 @@
 # LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 # OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 # WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+from threading import Lock
 
-from gpio import GPIO, Pin
 import spidev
+
+from RPiMCP23S17.errors import NotInitialized
+from RPiMCP23S17.virtual_pin import VirtualPin
+from gpio import Pin
+
+
+def lock(f):
+    def wrapper(self, *args, **kwargs):
+        if not self.isInitialized:
+            raise NotInitialized(f"{self.__class__.__name__} not initialized. "
+                                 f"Please call open() or use the context manager")
+        with self.lock:
+            res = f(self, *args, **kwargs)
+        return res
+
+    return wrapper
 
 
 class MCP23S17(object):
@@ -32,6 +48,7 @@ class MCP23S17(object):
     be get from https://pypi.python.org/pypi/RPi.GPIO/0.5.11 and
     https://pypi.python.org/pypi/spidev.
     """
+    N_PINS = 16
     PULLUP_ENABLED = 0
     PULLUP_DISABLED = 1
 
@@ -73,7 +90,13 @@ class MCP23S17(object):
     MCP23S17_CMD_WRITE = 0x40
     MCP23S17_CMD_READ = 0x41
 
-    def __init__(self, bus=0, pin_cs=0, reset_pin: Pin = None, device_id=0x00):
+    def __init__(self, spi: spidev.SpiDev,
+                 reset_pin: Pin = None,
+                 intA_pin: Pin = None,
+                 intB_bin: Pin = None,
+                 int_level=Pin.FALLING,
+                 lock: Lock = None,
+                 device_id=0x00):
         """
         Constructor
         Initializes all attributes with 0.
@@ -91,10 +114,10 @@ class MCP23S17(object):
         self._GPPUA = 0
         self._GPPUB = 0
         self.reset_pin = reset_pin
-        self._bus = bus
-        self._pin_cs = pin_cs
-        self._spimode = 0b00
-        self._spi = spidev.SpiDev()
+        self.int_pins = [intA_pin, intB_bin]
+        self.int_level = int_level
+        self.lock = lock
+        self._spi = spi
         self.isInitialized = False
 
     def open(self):
@@ -102,7 +125,8 @@ class MCP23S17(object):
         and sequential operations mode.
         """
         self._setupGPIO()
-        self._spi.open(self._bus, self._pin_cs)
+        # TODO: check spi is opened
+        # self._spi.open(self._bus, self._pin_cs)
         self.isInitialized = True
         self._writeRegister(MCP23S17.MCP23S17_IOCON, MCP23S17.IOCON_INIT)
 
@@ -273,14 +297,17 @@ class MCP23S17(object):
         self._GPIOB = (data >> 8)
         return data
 
+    def setInterrupt(self, pin, mode):
+        raise NotImplementedError("TODO")
+
+    @lock
     def _writeRegister(self, register, value):
-        assert self.isInitialized
         command = MCP23S17.MCP23S17_CMD_WRITE | (self.device_id << 1)
         self._setSpiMode(self._spimode)
         self._spi.xfer2([command, register, value])
 
+    @lock
     def _readRegister(self, register):
-        assert self.isInitialized
         command = MCP23S17.MCP23S17_CMD_READ | (self.device_id << 1)
         self._setSpiMode(self._spimode)
         data = self._spi.xfer2([command, register, 0])
@@ -303,8 +330,18 @@ class MCP23S17(object):
         if reset_pin:
             reset_pin.set_output()
             reset_pin.value = True
+        for channel, pin in zip("AB", self.int_pins):
+            if pin is not None:
+                pin.set_input()
+                pin.on_interrupt(self.int_level, lambda: self.on_interrupt(channel))
+
+    def on_interrupt(self, channel: str):
+        raise NotImplementedError("This method is abstract")
 
     def _setSpiMode(self, mode):
         if self._spi.mode != mode:
             self._spi.mode = mode
             self._spi.xfer2([0])  # dummy write, to force CLK to correct level
+
+    def __getitem__(self, item):
+        return VirtualPin(self, item)
